@@ -1,9 +1,0 @@
-{
-  "version": "2.0",
-  "routeKey": "POST /orders",
-  "rawPath": "/orders",
-  "headers": {"content-type": "application/json"},
-  "requestContext": {"http": {"method": "POST", "path": "/orders"}},
-  "body": "{\"customerId\":\"customer-123\",\"items\":[{\"productId\":\"sku-001\",\"quantity\":2}]}",
-  "isBase64Encoded": false
-}
