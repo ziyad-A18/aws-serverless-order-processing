@@ -1,0 +1,8 @@
+{
+  "httpMethod": "POST",
+  "path": "/orders",
+  "headers": {"Content-Type": "application/json"},
+  "isBase64Encoded": false,
+  "body": "{\"customer_email\":\"customer@example.com\",\"items\":[{\"product_id\":\"AWS-BOOK-01\",\"quantity\":2,\"unit_price\":29.99}]}"
+}
+

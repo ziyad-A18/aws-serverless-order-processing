@@ -1,0 +1,11 @@
+{
+  "Records": [
+    {
+      "messageId": "example-message-id",
+      "body": "{\"order_id\":\"replace-with-order-id\"}",
+      "eventSource": "aws:sqs",
+      "awsRegion": "us-east-1"
+    }
+  ]
+}
+

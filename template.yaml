@@ -1,0 +1,255 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: Event-driven serverless order processing with API Gateway, Lambda, DynamoDB, SQS, and SNS.
+
+Parameters:
+  Environment:
+    Type: String
+    Default: dev
+    AllowedValues: [dev, test, prod]
+  NotificationEmail:
+    Type: String
+    Default: ''
+    Description: Optional email address that receives order completion notifications.
+
+Conditions:
+  HasNotificationEmail: !Not [!Equals [!Ref NotificationEmail, '']]
+
+Globals:
+  Function:
+    Runtime: python3.12
+    Architectures: [arm64]
+    MemorySize: 256
+    Timeout: 10
+    Tracing: Active
+    Environment:
+      Variables:
+        ORDERS_TABLE: !Ref OrdersTable
+    Tags:
+      Project: aws-serverless-order-processing
+      Environment: !Ref Environment
+  Api:
+    TracingEnabled: true
+
+Resources:
+  OrdersApi:
+    Type: AWS::Serverless::Api
+    Properties:
+      Name: !Sub '${AWS::StackName}-api'
+      StageName: !Ref Environment
+      EndpointConfiguration: REGIONAL
+
+  OrdersTable:
+    Type: AWS::DynamoDB::Table
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+    Properties:
+      TableName: !Sub '${AWS::StackName}-orders'
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: order_id
+          AttributeType: S
+      KeySchema:
+        - AttributeName: order_id
+          KeyType: HASH
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: true
+      SSESpecification:
+        SSEEnabled: true
+      Tags:
+        - Key: Project
+          Value: aws-serverless-order-processing
+
+  OrdersDeadLetterQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub '${AWS::StackName}-orders-dlq'
+      MessageRetentionPeriod: 1209600
+      SqsManagedSseEnabled: true
+
+  OrdersQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub '${AWS::StackName}-orders'
+      VisibilityTimeout: 60
+      MessageRetentionPeriod: 345600
+      SqsManagedSseEnabled: true
+      RedrivePolicy:
+        deadLetterTargetArn: !GetAtt OrdersDeadLetterQueue.Arn
+        maxReceiveCount: 3
+
+  OrderNotificationsTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: !Sub '${AWS::StackName}-notifications'
+      KmsMasterKeyId: alias/aws/sns
+
+  EmailSubscription:
+    Type: AWS::SNS::Subscription
+    Condition: HasNotificationEmail
+    Properties:
+      Protocol: email
+      Endpoint: !Ref NotificationEmail
+      TopicArn: !Ref OrderNotificationsTopic
+
+  CreateOrderRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${AWS::StackName}-create-order-role'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal: {Service: lambda.amazonaws.com}
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+        - arn:aws:iam::aws:policy/AWSXRayDaemonWriteAccess
+      Policies:
+        - PolicyName: CreateOrderLeastPrivilege
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: dynamodb:PutItem
+                Resource: !GetAtt OrdersTable.Arn
+              - Effect: Allow
+                Action: sqs:SendMessage
+                Resource: !GetAtt OrdersQueue.Arn
+
+  GetOrderRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${AWS::StackName}-get-order-role'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal: {Service: lambda.amazonaws.com}
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+        - arn:aws:iam::aws:policy/AWSXRayDaemonWriteAccess
+      Policies:
+        - PolicyName: ReadOrderLeastPrivilege
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: dynamodb:GetItem
+                Resource: !GetAtt OrdersTable.Arn
+
+  ProcessOrderRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${AWS::StackName}-process-order-role'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal: {Service: lambda.amazonaws.com}
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+        - arn:aws:iam::aws:policy/AWSXRayDaemonWriteAccess
+      Policies:
+        - PolicyName: ProcessOrderLeastPrivilege
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - dynamodb:GetItem
+                  - dynamodb:UpdateItem
+                Resource: !GetAtt OrdersTable.Arn
+              - Effect: Allow
+                Action: sns:Publish
+                Resource: !Ref OrderNotificationsTopic
+              - Effect: Allow
+                Action:
+                  - sqs:ReceiveMessage
+                  - sqs:DeleteMessage
+                  - sqs:GetQueueAttributes
+                Resource: !GetAtt OrdersQueue.Arn
+
+  CreateOrderFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub '${AWS::StackName}-create-order'
+      CodeUri: src/create_order/
+      Handler: app.lambda_handler
+      Role: !GetAtt CreateOrderRole.Arn
+      Environment:
+        Variables:
+          ORDERS_QUEUE_URL: !Ref OrdersQueue
+      Events:
+        CreateOrder:
+          Type: Api
+          Properties:
+            RestApiId: !Ref OrdersApi
+            Path: /orders
+            Method: POST
+
+  GetOrderFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub '${AWS::StackName}-get-order'
+      CodeUri: src/get_order/
+      Handler: app.lambda_handler
+      Role: !GetAtt GetOrderRole.Arn
+      Events:
+        GetOrder:
+          Type: Api
+          Properties:
+            RestApiId: !Ref OrdersApi
+            Path: /orders/{order_id}
+            Method: GET
+
+  ProcessOrderFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub '${AWS::StackName}-process-order'
+      CodeUri: src/process_order/
+      Handler: app.lambda_handler
+      Role: !GetAtt ProcessOrderRole.Arn
+      Timeout: 30
+      Environment:
+        Variables:
+          NOTIFICATIONS_TOPIC_ARN: !Ref OrderNotificationsTopic
+      Events:
+        OrdersQueueEvent:
+          Type: SQS
+          Properties:
+            Queue: !GetAtt OrdersQueue.Arn
+            BatchSize: 10
+            FunctionResponseTypes: [ReportBatchItemFailures]
+
+  Api5xxAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: API Gateway server errors detected.
+      Namespace: AWS/ApiGateway
+      MetricName: 5XXError
+      Dimensions:
+        - Name: ApiName
+          Value: !Sub '${AWS::StackName}-api'
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+
+Outputs:
+  ApiUrl:
+    Description: Base URL for the order API.
+    Value: !Sub 'https://${OrdersApi}.execute-api.${AWS::Region}.${AWS::URLSuffix}/${Environment}'
+  OrdersTableName:
+    Value: !Ref OrdersTable
+  OrdersQueueUrl:
+    Value: !Ref OrdersQueue
+  DeadLetterQueueUrl:
+    Value: !Ref OrdersDeadLetterQueue
+  NotificationsTopicArn:
+    Value: !Ref OrderNotificationsTopic
+

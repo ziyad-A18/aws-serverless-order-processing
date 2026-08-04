@@ -1,0 +1,7 @@
+{
+  "httpMethod": "GET",
+  "path": "/orders/replace-with-order-id",
+  "pathParameters": {"order_id": "replace-with-order-id"},
+  "isBase64Encoded": false
+}
+
