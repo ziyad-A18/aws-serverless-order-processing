@@ -1,0 +1,12 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.aws-sam/
+.venv/
+venv/
+.env
+env.local.json
+samconfig.toml
+.idea/
+.vscode/
+.DS_Store
