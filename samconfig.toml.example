@@ -1,9 +1,0 @@
-version = 0.1
-
-[default.deploy.parameters]
-stack_name = "aws-serverless-order-processing-fixed"
-resolve_s3 = true
-capabilities = "CAPABILITY_IAM"
-confirm_changeset = true
-region = "us-east-1"
-parameter_overrides = "AlarmEmail=you@example.com"
